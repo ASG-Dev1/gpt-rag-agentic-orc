@@ -4,11 +4,15 @@ import time
 import json
 import logging
 import asyncio
-from typing import Annotated, Optional, List, Dict, Any
+from typing import Annotated, Optional, List, Dict, Any, Tuple
 from urllib.parse import urlparse
 
 import aiohttp
-from azure.identity import ManagedIdentityCredential, AzureCliCredential, ChainedTokenCredential
+from azure.identity import (
+    ManagedIdentityCredential,
+    AzureCliCredential,
+    ChainedTokenCredential,
+)
 from connectors import AzureOpenAIClient
 
 from .types import (
@@ -21,24 +25,28 @@ from .types import (
 # Helper Functions
 # -----------------------------------------------------------------------------
 
+
 async def _get_azure_search_token() -> str:
     """
     Acquires an Azure Search access token using chained credentials.
     """
     try:
         credential = ChainedTokenCredential(
-            ManagedIdentityCredential(),
-            AzureCliCredential()
+            ManagedIdentityCredential(), AzureCliCredential()
         )
         # Wrap the synchronous token acquisition in a thread.
-        token_obj = await asyncio.to_thread(credential.get_token, "https://search.azure.com/.default")
+        token_obj = await asyncio.to_thread(
+            credential.get_token, "https://search.azure.com/.default"
+        )
         return token_obj.token
     except Exception as e:
         logging.error("Error obtaining Azure Search token.", exc_info=True)
         raise Exception("Failed to obtain Azure Search token.") from e
 
 
-async def _perform_search(url: str, headers: Dict[str, str], body: Dict[str, Any]) -> Dict[str, Any]:
+async def _perform_search(
+    url: str, headers: Dict[str, str], body: Dict[str, Any]
+) -> Dict[str, Any]:
     """
     Performs an asynchronous HTTP POST request to the given URL with the provided headers and body.
     Returns the parsed JSON response.
@@ -64,120 +72,207 @@ async def _perform_search(url: str, headers: Dict[str, str], body: Dict[str, Any
 # Main Functions
 # -----------------------------------------------------------------------------
 
+
 async def vector_index_retrieve(
-    input: Annotated[
-        str, "An optimized query string based on the user's ask and conversation history, when available"
-    ],
-    security_ids: str = 'anonymous'
+    input: Annotated[str, "Optimized query string"],
+    security_ids: str = "anonymous",
 ) -> Annotated[
-    VectorIndexRetrievalResult, "A Pydantic model containing the search results as a string"
+    VectorIndexRetrievalResult,
+    "A Pydantic model containing the search results as a string",
 ]:
     """
-    Performs a vector search against Azure Cognitive Search and returns the results
-    wrapped in a Pydantic model. If an error occurs, the 'error' field is populated.
+    Performs a keyword/semantic search against Azure Cognitive Search and maps freeform
+    user queries to specific document fields or returns all fields for 'show all' requests.
     """
-    aoai = AzureOpenAIClient()
-    search_top_k = os.getenv('AZURE_SEARCH_TOP_K', 3)
-    search_approach = os.getenv('AZURE_SEARCH_APPROACH', 'hybrid')
-    semantic_search_config = os.getenv('AZURE_SEARCH_SEMANTIC_SEARCH_CONFIG', 'my-semantic-config')
-    search_service = os.getenv('AZURE_SEARCH_SERVICE')
-    search_index = os.getenv('AZURE_SEARCH_INDEX', 'ragindex')
-    search_api_version = os.getenv('AZURE_SEARCH_API_VERSION', '2024-07-01')
-    use_semantic = os.getenv('AZURE_SEARCH_USE_SEMANTIC', 'false').lower() == 'true'
+    # Load settings
+    search_top_k = int(os.getenv("AZURE_SEARCH_TOP_K", 3))
+    use_semantic = os.getenv("AZURE_SEARCH_USE_SEMANTIC", "false").lower() == "true"
+    semantic_config = os.getenv(
+        "AZURE_SEARCH_SEMANTIC_SEARCH_CONFIG", "my-semantic-config"
+    )
+    service = os.getenv("AZURE_SEARCH_SERVICE", "search0jdjja")
+    index = os.getenv("AZURE_SEARCH_INDEX", "purchase-orders-from-blob")
+    api_version = "2023-07-01-Preview"
 
-    VECTOR_SEARCH_APPROACH = 'vector'
-    TERM_SEARCH_APPROACH = 'term'
-    HYBRID_SEARCH_APPROACH = 'hybrid'
+    # Field label mapping
+    field_labels = {
+        "Id_de_Requisicion": "Requisition ID",
+        "Numero_de_Caso": "Case Number",
+        "Costo_Unitario_Estimado_de_Articulo": "Estimated Unit Cost",
+        "Descripcion_de_Articulo": "Description",
+        "Marca_de_Articulo": "Brand",
+        "Modelo_de_Articulo": "Model",
+        "Garantia_de_Articulo": "Warranty",
+        "Unidad_de_Medida": "Unit",
+        "Cantidad": "Quantity",
+        "Fecha_Recibo_de_Requisicion": "Received Date",
+        "Numero_de_Requisicion": "Requisition Number",
+        "Titulo_de_Requisicion": "Requisition Title",
+        "Categoria_de_Requisicion": "Category",
+        "SubCategoria_de_Requisicion": "Subcategory",
+        "Agencia": "Agency",
+        "Nombre_de_Agencia_de_Entrega": "Delivery Agency",
+        "Metodo_de_Adquisicion": "Acquisition Method",
+        "Costo_Estimado_Total_de_Orden_de_Articulo": "Estimated Total Cost",
+        "Numero_de_Contrato": "Contract Number",
+        "Costo_Unitario_Final_de_Articulo": "Final Unit Cost",
+        "Costo_Final_de_Orden_de_Articulo": "Final Order Cost",
+        "Numero_de_Orden_de_Compra": "Purchase Order Number",
+        "Nombre_de_Archivo_de_Orden_de_Compra": "Order File Name",
+        "Url_de_Archivo_de_Orden_de_Compra": "Order File URL",
+        "Nombre_de_Suplidor": "Supplier",
+        "Telefono_de_Contacto_de_Suplidor": "Supplier Phone",
+        "Email_de_Suplidor": "Supplier Email",
+    }
+    all_fields = list(field_labels.keys())
 
-    search_results: List[str] = []
-    error_message: Optional[str] = None
-    search_query = input
+    # Automatic mapping of field keywords from labels and field names
+    from typing import List, Tuple
+
+    dynamic_field_map: List[Tuple[List[str], str]] = []
+    for field, label in field_labels.items():
+        # keywords are words in the English label and parts of the field name
+        keywords = set(label.lower().split()) | set(field.lower().split("_"))
+        dynamic_field_map.append((list(keywords), field))
+
+    # Specific field keywords
+    field_map = [
+        (
+            ["unit cost", "costo unitario", "costo unitario estimado"],
+            "Costo_Unitario_Estimado_de_Articulo",
+        ),
+        (["description", "descripcion"], "Descripcion_de_Articulo"),
+        (["supplier", "suplidor", "proveedor"], "Nombre_de_Suplidor"),
+        (
+            ["supplier phone", "telefono", "telefono de contacto"],
+            "Telefono_de_Contacto_de_Suplidor",
+        ),
+        (["supplier email", "email", "correo"], "Email_de_Suplidor"),
+        (
+            ["warranty", "garantia", "tiempo de garantia", "tiempo de garantía"],
+            "Garantia_de_Articulo",
+        ),
+        (
+            ["estimated cost", "costo estimado"],
+            "Costo_Estimado_Total_de_Orden_de_Articulo",
+        ),
+        # add others if needed
+    ]
+
+    SHOW_ALL_TRIGGERS = [
+        "all information",
+        "all info",
+        "full",
+        "everything",
+        "todos",
+        "toda",
+    ]
+
+    results: List[str] = []
+    error: Optional[str] = None
+    query = input.strip()
+    q = query.lower()
 
     try:
-        # Generate embeddings for the query.
-        start_time = time.time()
-        logging.info(f"[vector_index_retrieve] Generating question embeddings. Search query: {search_query}")
-        # Wrap synchronous get_embeddings in a thread.
-        embeddings_query = await asyncio.to_thread(aoai.get_embeddings, search_query)
-        response_time = round(time.time() - start_time, 2)
-        logging.info(f"[vector_index_retrieve] Finished generating embeddings in {response_time} seconds")
-
-        # Acquire token for Azure Search.
-        azure_search_token = await _get_azure_search_token()
-
-        # Prepare the request body.
-        body: Dict[str, Any] = {
-            "select": "title, content, url, filepath, chunk_id",
-            "top": search_top_k
-        }
-        if search_approach == TERM_SEARCH_APPROACH:
-            body["search"] = search_query
-        elif search_approach == VECTOR_SEARCH_APPROACH:
-            body["vectorQueries"] = [{
-                "kind": "vector",
-                "vector": embeddings_query,
-                "fields": "contentVector",
-                "k": int(search_top_k)
-            }]
-        elif search_approach == HYBRID_SEARCH_APPROACH:
-            body["search"] = search_query
-            body["vectorQueries"] = [{
-                "kind": "vector",
-                "vector": embeddings_query,
-                "fields": "contentVector",
-                "k": int(search_top_k)
-            }]
-
-        # Apply security filter.
-        filter_str = (
-            f"metadata_security_id/any(g:search.in(g, '{security_ids}')) "
-            f"or not metadata_security_id/any()"
-        )
-        body["filter"] = filter_str
-        logging.debug(f"[vector_index_retrieve] Search filter: {filter_str}")
-
+        # Prepare headers and body
+        token = await _get_azure_search_token()
+        api_key = os.getenv("AZURE_SEARCH_API_KEY")
         headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {azure_search_token}'
+            "Content-Type": "application/json",
+            **(
+                {"api-key": api_key}
+                if api_key
+                else {"Authorization": f"Bearer {token}"}
+            ),
         }
+        # body: Dict[str, Any] = {"search": query, "select": "*", "top": search_top_k}
+        body: Dict[str, Any] = {
+            "search": query,
+            "select": ",".join(all_fields),
+            "top": search_top_k,
+        }
+        if use_semantic and semantic_config:
+            body.update(
+                {"queryType": "semantic", "semanticConfiguration": semantic_config}
+            )
+        # if m := re.search(r"(?:case number|numero de caso)[\s:]*([0-9A-Z\\-]+)", q):
+        #     body["filter"] = f"Numero_de_Caso eq '{m.group(1)}'"
 
-        search_url = (
-            f"https://{search_service}.search.windows.net/indexes/{search_index}/docs/search"
-            f"?api-version={search_api_version}"
+        # Match phrases like:
+        # - caso 23J-15661
+        # - número de caso: 23J-15661
+        # - numero de caso es 23J-15661
+        case_match = re.search(
+            r"(?:caso\s+(?:n[uú]mero\s+de\s+)?)?(?:caso)?\s*[#:]*\s*([0-9]{2}[A-Z]-[0-9]+)",
+            q,
+            re.IGNORECASE,
         )
 
-        # Execute the search query asynchronously.
-        start_time = time.time()
-        response_json = await _perform_search(search_url, headers, body)
-        elapsed = round(time.time() - start_time, 2)
-        logging.info(f"[vector_index_retrieve] Finished querying Azure Cognitive Search in {elapsed} seconds")
+        if case_match:
+            case_number_for_filter = case_match.group(1).upper()
+            body["search"] = "*"  # ignore full text search
+            body["filter"] = f"Numero_de_Caso eq '{case_number_for_filter}'"
+            body["top"] = 1
+            print(f"📌 Filtering by Numero_de_Caso: {case_number_for_filter}")
 
-        if response_json.get('value'):
-            logging.info(f"[vector_index_retrieve] {len(response_json['value'])} documents retrieved")
-            for doc in response_json['value']:
-                url = doc.get('url', '')
-                uri = re.sub(r'https://[^/]+\.blob\.core\.windows\.net', '', url)                
-                content_str = doc.get('content', '').strip()
-                search_results.append(f"{uri}: {content_str}\n")
-        else:
-            logging.info("[vector_index_retrieve] No documents retrieved")
+        url = f"https://{service}.search.windows.net/indexes/{index}/docs/search?api-version={api_version}"
+        resp = await _perform_search(url, headers, body)
+
+        for doc in resp.get("value", []):
+            # First, try to match using field_map only
+            matched_fields = [
+                field for kws, field in field_map if any(kw in q for kw in kws)
+            ]
+
+            # If nothing matched, fall back to dynamic_field_map
+            if not matched_fields:
+                matched_fields = [
+                    field
+                    for kws, field in dynamic_field_map
+                    if any(kw in q for kw in kws)
+                ]
+
+            if matched_fields:
+                lines = []
+                for field in matched_fields:
+                    val = doc.get(field)
+                    if val:
+                        label = field_labels.get(field, field)
+                        lines.append(f"{label}: {val}")
+                if lines:
+                    results.append("\n".join(lines))
+                else:
+                    results.append("No matching field values found.")
+                continue
+
+            if any(
+                kw in q
+                for kw in SHOW_ALL_TRIGGERS
+                + ["toda la información", "información del caso"]
+            ):
+                lines = [
+                    f"{field_labels[f]}: {doc.get(f)}" for f in all_fields if doc.get(f)
+                ]
+                results.append("\n".join(lines))
+            else:
+                results.append("❗ Especifique claramente qué campo desea consultar.")
 
     except Exception as e:
-        error_message = f"Exception occurred: {e}"
-        logging.error(f"[vector_index_retrieve] {error_message}", exc_info=True)
+        error = str(e)
+        logging.error("vector_index_retrieve error", exc_info=True)
 
-    # Join the retrieved results into a single string.
-    sources = ' '.join(search_results)
-    return VectorIndexRetrievalResult(result=sources, error=error_message)
+    return VectorIndexRetrievalResult(result="\n\n".join(results), error=error)
+
 
 def extract_captions(str_captions):
     # Regular expression pattern to match image references followed by their descriptions
     pattern = r"\[.*?\]:\s(.*?)(?=\[.*?\]:|$)"
-    
+
     # Find all matches
     matches = re.findall(pattern, str_captions, re.DOTALL)
 
     return [match.strip() for match in matches]
+
 
 def replace_image_filenames_with_urls(content: str, related_images: list) -> str:
     """
@@ -188,7 +283,9 @@ def replace_image_filenames_with_urls(content: str, related_images: list) -> str
         # Parse the URL and remove the leading slash from the path
         logging.debug(f"[multimodal_vector_index_retrieve] image_url: {image_url}.")
         parsed_url = urlparse(image_url)
-        image_path = parsed_url.path.lstrip('/')  # e.g., 'documents-images/myfolder/filename.png'
+        image_path = parsed_url.path.lstrip(
+            "/"
+        )  # e.g., 'documents-images/myfolder/filename.png'
         logging.debug(f"[multimodal_vector_index_retrieve] image_path: {image_path}.")
         # Replace occurrences of the relative path in the content with the full URL
         content = content.replace(image_path, image_url)
@@ -199,27 +296,33 @@ def replace_image_filenames_with_urls(content: str, related_images: list) -> str
 
     return content
 
+
 async def multimodal_vector_index_retrieve(
     input: Annotated[
-        str, "An optimized query string based on the user's ask and conversation history, when available"
+        str,
+        "An optimized query string based on the user's ask and conversation history, when available",
     ],
-    security_ids: str = 'anonymous'
+    security_ids: str = "anonymous",
 ) -> Annotated[
     MultimodalVectorIndexRetrievalResult,
-    "A Pydantic model containing the search results with separate lists for texts and images"
+    "A Pydantic model containing the search results with separate lists for texts and images",
 ]:
     """
     Variation of vector_index_retrieve that fetches text and related images from the search index.
     Returns the results wrapped in a Pydantic model with separate lists for texts and images.
     """
     aoai = AzureOpenAIClient()
-    search_top_k = int(os.getenv('AZURE_SEARCH_TOP_K', 3))
-    search_approach = os.getenv('AZURE_SEARCH_APPROACH', 'vector')  # or 'hybrid'
-    semantic_search_config = os.getenv('AZURE_SEARCH_SEMANTIC_SEARCH_CONFIG', 'my-semantic-config')
-    search_service = os.getenv('AZURE_SEARCH_SERVICE')
-    search_index = os.getenv('AZURE_SEARCH_INDEX', 'ragindex')
-    search_api_version = os.getenv('AZURE_SEARCH_API_VERSION', '2024-07-01')
-    use_semantic = os.getenv('AZURE_SEARCH_USE_SEMANTIC', 'false').lower() == 'true'
+    search_top_k = int(os.getenv("AZURE_SEARCH_TOP_K", 3))
+    search_approach = os.getenv("AZURE_SEARCH_APPROACH", "hybrid")  # or 'hybrid'
+    semantic_search_config = os.getenv(
+        "AZURE_SEARCH_SEMANTIC_SEARCH_CONFIG", "my-semantic-config"
+    )
+    search_service = os.getenv("AZURE_SEARCH_SERVICE", "search0jdjja")
+    search_index = os.getenv("AZURE_SEARCH_INDEX", "purchase-orders-from-blob")
+    # search_api_version = os.getenv('AZURE_SEARCH_API_VERSION', '2024-07-01')
+    # search_api_version = os.getenv('AZURE_SEARCH_API_VERSION', '2023-10-01-Preview')
+    search_api_version = "2023-07-01-Preview"
+    use_semantic = os.getenv("AZURE_SEARCH_USE_SEMANTIC", "false").lower() == "true"
 
     logging.info(f"[multimodal_vector_index_retrieve] User input: {input}")
 
@@ -233,14 +336,16 @@ async def multimodal_vector_index_retrieve(
         start_time = time.time()
         embeddings_query = await asyncio.to_thread(aoai.get_embeddings, input)
         embedding_time = round(time.time() - start_time, 2)
-        logging.info(f"[multimodal_vector_index_retrieve] Query embeddings took {embedding_time} seconds")
+        logging.info(
+            f"[multimodal_vector_index_retrieve] Query embeddings took {embedding_time} seconds"
+        )
     except Exception as e:
         error_message = f"Error generating embeddings: {e}"
-        logging.error(f"[multimodal_vector_index_retrieve] {error_message}", exc_info=True)
+        logging.error(
+            f"[multimodal_vector_index_retrieve] {error_message}", exc_info=True
+        )
         return MultimodalVectorIndexRetrievalResult(
-            texts=[],
-            images=[],
-            error=error_message
+            texts=[], images=[], error=error_message
         )
 
     # 2. Acquire Azure Search token.
@@ -248,11 +353,11 @@ async def multimodal_vector_index_retrieve(
         azure_search_token = await _get_azure_search_token()
     except Exception as e:
         error_message = f"Error acquiring token for Azure Search: {e}"
-        logging.error(f"[multimodal_vector_index_retrieve] {error_message}", exc_info=True)
+        logging.error(
+            f"[multimodal_vector_index_retrieve] {error_message}", exc_info=True
+        )
         return MultimodalVectorIndexRetrievalResult(
-            texts=[],
-            images=[],
-            error=error_message
+            texts=[], images=[], error=error_message
         )
 
     # 3. Build the request body.
@@ -264,31 +369,31 @@ async def multimodal_vector_index_retrieve(
                 "kind": "vector",
                 "vector": embeddings_query,
                 "fields": "contentVector",
-                "k": int(search_top_k)
+                "k": int(search_top_k),
             },
             {
                 "kind": "vector",
                 "vector": embeddings_query,
                 "fields": "captionVector",
-                "k": int(search_top_k)
-            }
-        ]
+                "k": int(search_top_k),
+            },
+        ],
     }
 
     if use_semantic and search_approach != "vector":
         body["queryType"] = "semantic"
         body["semanticConfiguration"] = semantic_search_config
 
-    # Apply security filter.
-    filter_str = (
-        f"metadata_security_id/any(g:search.in(g, '{security_ids}')) "
-        "or not metadata_security_id/any()"
-    )
-    body["filter"] = filter_str
+    # # Apply security filter.
+    # filter_str = (
+    #     f"metadata_security_id/any(g:search.in(g, '{security_ids}')) "
+    #     "or not metadata_security_id/any()"
+    # )
+    # body["filter"] = filter_str
 
     headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f'Bearer {azure_search_token}'
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {azure_search_token}",
     }
 
     search_url = (
@@ -300,42 +405,49 @@ async def multimodal_vector_index_retrieve(
     # 4. Query Azure Search.
     try:
         start_time = time.time()
+        print("🔎 Final search_url2:", search_url)
+        print("🔎 Request headers2:", headers)
+        print("🔎 Request body2:", json.dumps(body, indent=2))
         response_json = await _perform_search(search_url, headers, body)
         response_time = round(time.time() - start_time, 2)
-        logging.info(f"[multimodal_vector_index_retrieve] Finished querying Azure AI Search in {response_time} seconds")
+        logging.info(
+            f"[multimodal_vector_index_retrieve] Finished querying Azure AI Search in {response_time} seconds"
+        )
 
-        for doc in response_json.get('value', []):
+        for doc in response_json.get("value", []):
 
-            content = doc.get('content', '')
-            str_captions = doc.get('imageCaptions', '')        
+            content = doc.get("content", "")
+            str_captions = doc.get("imageCaptions", "")
             captions.append(extract_captions(str_captions))
-            url = doc.get('url', '')
+            url = doc.get("url", "")
 
             # Convert blob URL to relative path
-            uri = re.sub(r'https://[^/]+\.blob\.core\.windows\.net', '', url)
+            uri = re.sub(r"https://[^/]+\.blob\.core\.windows\.net", "", url)
             text_results.append(f"{uri}: {content.strip()}")
 
             # Replace image filenames with URLs
-            content = replace_image_filenames_with_urls(content, doc.get('relatedImages', []))
+            content = replace_image_filenames_with_urls(
+                content, doc.get("relatedImages", [])
+            )
 
             # Extract image URLs from <figure> tags
             # doc_image_urls = re.findall(r'<figure>(https?://.*?)</figure>', content)
             # image_urls.append(doc_image_urls)
-            image_urls.append(doc.get('relatedImages', []))
+            image_urls.append(doc.get("relatedImages", []))
 
             # Replace <figure>...</figure> with <img src="...">
             # content = re.sub(r'<figure>(https?://\S+)</figure>', r'<img src="\1">', content)
 
     except Exception as e:
         error_message = f"Exception in retrieval: {e}"
-        logging.error(f"[multimodal_vector_index_retrieve] {error_message}", exc_info=True)
+        logging.error(
+            f"[multimodal_vector_index_retrieve] {error_message}", exc_info=True
+        )
 
     return MultimodalVectorIndexRetrievalResult(
-        texts=text_results,
-        images=image_urls,
-        captions=captions,
-        error=error_message
+        texts=text_results, images=image_urls, captions=captions, error=error_message
     )
+
 
 def get_data_points_from_chat_log(chat_log: list) -> DataPointsResult:
     """
@@ -349,10 +461,22 @@ def get_data_points_from_chat_log(chat_log: list) -> DataPointsResult:
     exec_content_pattern = re.compile(r"content='(.+?)', call_id=", re.DOTALL)
 
     # Allowed file extensions.
-    allowed_extensions = ['vtt', 'xlsx', 'xls', 'pdf', 'docx', 'pptx', 'png', 'jpeg', 'jpg', 'bmp', 'tiff']
+    allowed_extensions = [
+        "vtt",
+        "xlsx",
+        "xls",
+        "pdf",
+        "docx",
+        "pptx",
+        "png",
+        "jpeg",
+        "jpg",
+        "bmp",
+        "tiff",
+    ]
     filename_pattern = re.compile(
         rf"([^\s:]+\.(?:{'|'.join(allowed_extensions)})\s*:\s*.*?)(?=[^\s:]+\.(?:{'|'.join(allowed_extensions)})\s*:|$)",
-        re.IGNORECASE | re.DOTALL
+        re.IGNORECASE | re.DOTALL,
     )
 
     relevant_call_ids = set()
@@ -378,11 +502,15 @@ def get_data_points_from_chat_log(chat_log: list) -> DataPointsResult:
                     parsed = json.loads(content_part)
                     texts = parsed.get("texts", [])
                 except json.JSONDecodeError:
-                    texts = [re.split(r'["\']images["\']\s*:\s*\[', content_part, 1, re.IGNORECASE)[0]]
+                    texts = [
+                        re.split(
+                            r'["\']images["\']\s*:\s*\[', content_part, 1, re.IGNORECASE
+                        )[0]
+                    ]
                 for text in texts:
                     text = bytes(text, "utf-8").decode("unicode_escape")
                     for match in filename_pattern.findall(text):
-                        extracted = match.strip(" ,\\\"").lstrip("[").rstrip("],")
+                        extracted = match.strip(' ,\\"').lstrip("[").rstrip("],")
                         if extracted:
                             data_points.append(extracted)
     return DataPointsResult(data_points=data_points)

@@ -92,7 +92,7 @@ async def vector_index_retrieve(
     )
     service = os.getenv("AZURE_SEARCH_SERVICE", "search0jdjja")
     index = os.getenv("AZURE_SEARCH_INDEX", "purchase-orders-from-blob")
-    api_version = "2023-07-01-Preview"
+    api_version = os.getenv("AZURE_SEARCH_API_VERSION", "2023-07-01-Preview")
 
     # Field label mapping
     field_labels = {

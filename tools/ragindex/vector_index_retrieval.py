@@ -94,7 +94,7 @@ async def vector_index_retrieve(
     index = os.getenv("AZURE_SEARCH_INDEX", "purchase-orders-from-blob")
     api_version = os.getenv("AZURE_SEARCH_API_VERSION", "2023-07-01-Preview")
 
-    # Field label mapping
+    # Field label mapping from the search service indexes - Spanish to English
     field_labels = {
         "Id_de_Requisicion": "Requisition ID",
         "Numero_de_Caso": "Case Number",
@@ -138,25 +138,130 @@ async def vector_index_retrieve(
     # Specific field keywords
     field_map = [
         (
-            ["unit cost", "costo unitario", "costo unitario estimado"],
+            [
+                "unit cost",
+                "estimated unit cost",
+                "costo unitario",
+                "costo unitario estimado",
+                "costo unitario estimado del artículo",
+            ],
             "Costo_Unitario_Estimado_de_Articulo",
         ),
-        (["description", "descripcion"], "Descripcion_de_Articulo"),
+        (
+            ["description", "descripcion", "descripción", "descripción del artículo"],
+            "Descripcion_de_Articulo",
+        ),
         (["supplier", "suplidor", "proveedor"], "Nombre_de_Suplidor"),
         (
-            ["supplier phone", "telefono", "telefono de contacto"],
+            [
+                "supplier phone",
+                "phone",
+                "telephone",
+                "supplier telephone",
+                "telefono",
+                "numero de contacto del suplidor",
+                "numero de teléfono del suplidor" "telefono de contacto",
+            ],
             "Telefono_de_Contacto_de_Suplidor",
         ),
-        (["supplier email", "email", "correo"], "Email_de_Suplidor"),
         (
-            ["warranty", "garantia", "tiempo de garantia", "tiempo de garantía"],
+            [
+                "supplier email",
+                "email",
+                "correo",
+                "correo electrónico",
+                "correo electrónico del suplidor",
+            ],
+            "Email_de_Suplidor",
+        ),
+        (
+            [
+                "warranty",
+                "garantia",
+                "garantía" "tiempo de garantia",
+                "tiempo de garantía",
+            ],
             "Garantia_de_Articulo",
         ),
         (
             ["estimated cost", "costo estimado"],
             "Costo_Estimado_Total_de_Orden_de_Articulo",
         ),
-        # add others if needed
+        (["final cost", "costo final"], "Costo_Final_de_Orden_de_Articulo"),
+        (["requisition id", "id de requisicion"], "Id_de_Requisicion"),
+        (
+            [
+                "case number",
+                "numero de caso",
+                "caso numero",
+                "número de caso",
+                "caso número",
+            ],
+            "Numero_de_Caso",
+        ),
+        (
+            ["requisition number", "numero de requisicion", "número de requisición"],
+            "Numero_de_Requisicion",
+        ),
+        (
+            [
+                "requisition title",
+                "title of the requisition",
+                "titulo de requisicion",
+                "título de requisión",
+            ],
+            "Titulo_de_Requisicion",
+        ),
+        (["category", "categoria"], "Categoria_de_Requisicion"),
+        (
+            ["subcategory", "subcategoria", "subcategoría"],
+            "SubCategoria_de_Requisicion",
+        ),
+        (["agency", "agencia"], "Agencia"),
+        (
+            [
+                "delivery agency",
+                "name of the delivery agency",
+                "agencia de entrega",
+                "nombre de la agencia de entrega",
+            ],
+            "Nombre_de_Agencia_de_Entrega",
+        ),
+        (
+            ["acquisition method", "metodo de adquisicion", "método de adquisición"],
+            "Metodo_de_Adquisicion",
+        ),
+        (
+            [
+                "purchase order number",
+                "number of the purchase order",
+                "numero de orden de compra",
+                "número de orden de compra",
+            ],
+            "Numero_de_Orden_de_Compra",
+        ),
+        (
+            ["order file name", "nombre de archivo de orden de compra"],
+            "Nombre_de_Archivo_de_Orden_de_Compra",
+        ),
+        (
+            ["order file url", "url de archivo de orden de compra"],
+            "Url_de_Archivo_de_Orden_de_Compra",
+        ),
+        (["brand", "marca", "marca del artículo"], "Marca_de_Articulo"),
+        (["model", "modelo", "model del artículo"], "Modelo_de_Articulo"),
+        (["unit", "unit measurement", "unidad de medida"], "Unidad_de_Medida"),
+        (["quantity", "cantidad"], "Cantidad"),
+        (
+            [
+                "received date",
+                "fecha recibo",
+                "fecha de recibo",
+                "fecha de recibo de requisicion",
+                "fecha de recibo de requisición",
+            ],
+            "Fecha_Recibo_de_Requisicion",
+        ),
     ]
 
     SHOW_ALL_TRIGGERS = [
@@ -185,7 +290,7 @@ async def vector_index_retrieve(
                 else {"Authorization": f"Bearer {token}"}
             ),
         }
-        # body: Dict[str, Any] = {"search": query, "select": "*", "top": search_top_k}
+
         body: Dict[str, Any] = {
             "search": query,
             "select": ",".join(all_fields),
@@ -195,13 +300,7 @@ async def vector_index_retrieve(
             body.update(
                 {"queryType": "semantic", "semanticConfiguration": semantic_config}
             )
-        # if m := re.search(r"(?:case number|numero de caso)[\s:]*([0-9A-Z\\-]+)", q):
-        #     body["filter"] = f"Numero_de_Caso eq '{m.group(1)}'"
 
-        # Match phrases like:
-        # - caso 23J-15661
-        # - número de caso: 23J-15661
-        # - numero de caso es 23J-15661
         case_match = re.search(
             r"(?:caso\s+(?:n[uú]mero\s+de\s+)?)?(?:caso)?\s*[#:]*\s*([0-9]{2}[A-Z]-[0-9]+)",
             q,
@@ -250,12 +349,62 @@ async def vector_index_retrieve(
                 for kw in SHOW_ALL_TRIGGERS
                 + ["toda la información", "información del caso"]
             ):
-                lines = [
-                    f"{field_labels[f]}: {doc.get(f)}" for f in all_fields if doc.get(f)
-                ]
-                results.append("\n".join(lines))
+                lines = []
+                pdf_url = doc.get("Url_de_Archivo_de_Orden_de_Compra")
+                pdf_name = (
+                    doc.get("Nombre_de_Archivo_de_Orden_de_Compra")
+                    or "Archivo de la Orden de Compra"
+                )
+
+                for f in all_fields:
+                    if f in [
+                        "Url_de_Archivo_de_Orden_de_Compra",
+                        "Nombre_de_Archivo_de_Orden_de_Compra",
+                    ]:
+                        continue
+                    val = doc.get(f)
+                    if val:
+                        lines.append(f"{field_labels[f]}: {val}")
+
+                text_block = "\n".join(lines)
+
+                if pdf_url:
+                    from urllib.parse import urlparse, urlencode, parse_qsl
+
+                    parsed = urlparse(pdf_url)
+                    query = dict(parse_qsl(parsed.query))
+                    query.update({"rsct": "application/pdf", "rscd": "inline"})
+                    new_url = parsed._replace(query=urlencode(query)).geturl()
+
+                    text_block += f"\n\n[INLINE_PDF:{pdf_name}|{new_url}]"
+                else:
+                    text_block += "\n\nArchivo de la Orden de Compra: No disponible."
+
+                results.append(text_block)
             else:
                 results.append("❗ Especifique claramente qué campo desea consultar.")
+
+        # Fallback: show inline PDF if no matched fields but PDF exists
+        if not results and resp.get("value"):
+            doc = resp["value"][0]
+            pdf_url = doc.get("Url_de_Archivo_de_Orden_de_Compra")
+            pdf_name = (
+                doc.get("Nombre_de_Archivo_de_Orden_de_Compra")
+                or "Archivo de la Orden de Compra"
+            )
+            if pdf_url:
+                from urllib.parse import urlparse, urlencode, parse_qsl
+
+                parsed = urlparse(pdf_url)
+                query = dict(parse_qsl(parsed.query))
+                query.update({"rsct": "application/pdf", "rscd": "inline"})
+                new_url = parsed._replace(query=urlencode(query)).geturl()
+                pdf_filename = pdf_url.split("/")[-1].split("?")[0]
+                results.append(
+                    f"El archivo del caso {doc.get('Numero_de_Caso')} está disponible:\n\n[INLINE_PDF:{pdf_filename}|{new_url}]"
+                )
+            else:
+                results.append("No se encontró un archivo asociado al caso.")
 
     except Exception as e:
         error = str(e)
@@ -319,8 +468,6 @@ async def multimodal_vector_index_retrieve(
     )
     search_service = os.getenv("AZURE_SEARCH_SERVICE", "search0jdjja")
     search_index = os.getenv("AZURE_SEARCH_INDEX", "purchase-orders-from-blob")
-    # search_api_version = os.getenv('AZURE_SEARCH_API_VERSION', '2024-07-01')
-    # search_api_version = os.getenv('AZURE_SEARCH_API_VERSION', '2023-10-01-Preview')
     search_api_version = "2023-07-01-Preview"
     use_semantic = os.getenv("AZURE_SEARCH_USE_SEMANTIC", "false").lower() == "true"
 
@@ -384,13 +531,6 @@ async def multimodal_vector_index_retrieve(
         body["queryType"] = "semantic"
         body["semanticConfiguration"] = semantic_search_config
 
-    # # Apply security filter.
-    # filter_str = (
-    #     f"metadata_security_id/any(g:search.in(g, '{security_ids}')) "
-    #     "or not metadata_security_id/any()"
-    # )
-    # body["filter"] = filter_str
-
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {azure_search_token}",
@@ -434,9 +574,6 @@ async def multimodal_vector_index_retrieve(
             # doc_image_urls = re.findall(r'<figure>(https?://.*?)</figure>', content)
             # image_urls.append(doc_image_urls)
             image_urls.append(doc.get("relatedImages", []))
-
-            # Replace <figure>...</figure> with <img src="...">
-            # content = re.sub(r'<figure>(https?://\S+)</figure>', r'<img src="\1">', content)
 
     except Exception as e:
         error_message = f"Exception in retrieval: {e}"

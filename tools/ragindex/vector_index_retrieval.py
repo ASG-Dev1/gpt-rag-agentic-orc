@@ -301,8 +301,13 @@ async def vector_index_retrieve(
                 {"queryType": "semantic", "semanticConfiguration": semantic_config}
             )
 
+        # case_match = re.search(
+        #     r"(?:caso\s+(?:n[uú]mero\s+de\s+)?)?(?:caso)?\s*[#:]*\s*([0-9]{2}[A-Z]-[0-9]+)",
+        #     q,
+        #     re.IGNORECASE,
+        # )
         case_match = re.search(
-            r"(?:caso\s+(?:n[uú]mero\s+de\s+)?)?(?:caso)?\s*[#:]*\s*([0-9]{2}[A-Z]-[0-9]+)",
+            r"\b([0-9]{2}[A-Z]-[0-9]{5})\b",
             q,
             re.IGNORECASE,
         )
@@ -316,6 +321,12 @@ async def vector_index_retrieve(
 
         url = f"https://{service}.search.windows.net/indexes/{index}/docs/search?api-version={api_version}"
         resp = await _perform_search(url, headers, body)
+
+        if not resp.get("value"):
+            results.append(
+                f"No se encontró ningún caso con el número {case_number_for_filter}."
+            )
+            return VectorIndexRetrievalResult(result="\n\n".join(results), error=None)
 
         for doc in resp.get("value", []):
             # First, try to match using field_map only

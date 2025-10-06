@@ -39,41 +39,42 @@ import logging.config
 from orchestration import Orchestrator
 import asyncio
 import warnings
+
 warnings.filterwarnings("ignore", category=UserWarning)
 
 LOGGING_CONFIG = {
-    'version': 1,
-    'disable_existing_loggers': False,  # Allow existing loggers to propagate
-    'formatters': {
-        'standard': {
-            'format': '%(asctime)s - %(levelname)s - %(name)s - %(message)s',
+    "version": 1,
+    "disable_existing_loggers": False,  # Allow existing loggers to propagate
+    "formatters": {
+        "standard": {
+            "format": "%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         },
     },
-    'handlers': {
-        'file_handler': {
-            'class': 'logging.FileHandler',
-            'filename': 'output.log',
-            'mode': 'a',
-            'formatter': 'standard',
-            'level': 'INFO',
+    "handlers": {
+        "file_handler": {
+            "class": "logging.FileHandler",
+            "filename": "output.log",
+            "mode": "a",
+            "formatter": "standard",
+            "level": "INFO",
         },
-        'console_handler': {
-            'class': 'logging.StreamHandler',
-            'stream': sys.stdout,
-            'formatter': 'standard',
-            'level': 'ERROR',
+        "console_handler": {
+            "class": "logging.StreamHandler",
+            "stream": sys.stdout,
+            "formatter": "standard",
+            "level": "ERROR",
         },
     },
-    'root': {
-        'handlers': ['file_handler', 'console_handler'],
-        'level': 'DEBUG',
+    "root": {
+        "handlers": ["file_handler", "console_handler"],
+        "level": "DEBUG",
     },
-    'loggers': {
+    "loggers": {
         # Explicitly configure external loggers to propagate to root
-        'shared.util': {
-            'handlers': ['file_handler'],  # Only file handler
-            'level': 'INFO',
-            'propagate': True,
+        "shared.util": {
+            "handlers": ["file_handler"],  # Only file handler
+            "level": "INFO",
+            "propagate": True,
         },
         # Add more external loggers here if needed
     },
@@ -95,8 +96,8 @@ def get_rest_api_config():
     """
     load_dotenv()
 
-    uri = os.getenv('ORCHESTRATOR_ENDPOINT')
-    x_functions_key = os.getenv('FUNCTION_KEY')
+    uri = os.getenv("ORCHESTRATOR_ENDPOINT")
+    x_functions_key = os.getenv("FUNCTION_KEY")
 
     if not uri:
         logger.error("ORCHESTRATOR_ENDPOINT not found in environment variables.")
@@ -106,6 +107,7 @@ def get_rest_api_config():
         sys.exit(1)
 
     return uri, x_functions_key
+
 
 def get_user_input():
     """
@@ -122,35 +124,34 @@ def get_user_input():
         return question
     except EOFError:
         # Ctrl+D pressed
-        return 'CTRL_D'
+        return "CTRL_D"
     except KeyboardInterrupt:
         print("\nOperation cancelled by user.")
         sys.exit(0)
 
 
-def send_question_to_python(question, conversation_id):
+def send_question_to_python(question, thread_id):
     """
     Process the question using the orchestrator.
 
     Args:
         question (str): The user's question.
-        conversation_id (str): The conversation ID.
+        thread_id (str): The conversation ID.
 
     Returns:
         dict: The response from the orchestrator.
     """
     # Use default client principal information
     client_principal = {
-        'id': '00000000-0000-0000-0000-000000000123',
-        'name': 'anonymous',
-        'group_names': ''        
+        "id": "00000000-0000-0000-0000-000000000123",
+        "name": "anonymous",
+        "group_names": "",
     }
-
 
     # Call orchestrator
     if question:
         try:
-            orchestrator = Orchestrator(conversation_id, client_principal)
+            orchestrator = Orchestrator(thread_id, client_principal)
             result = asyncio.run(orchestrator.answer(question))
             if not isinstance(result, dict):
                 logger.error("Expected result to be a dictionary.")
@@ -164,7 +165,7 @@ def send_question_to_python(question, conversation_id):
         return {"error": "No question provided."}
 
 
-def send_question_to_rest_api(uri, x_functions_key, question, conversation_id):
+def send_question_to_rest_api(uri, x_functions_key, question, thread_id):
     """
     Send the question to the orchestrator API and return the response.
 
@@ -172,20 +173,14 @@ def send_question_to_rest_api(uri, x_functions_key, question, conversation_id):
         uri (str): The API endpoint URI.
         x_functions_key (str): The API access key.
         question (str): The question to send.
-        conversation_id (str): The conversation ID.
+        thread_id (str): The conversation ID.
 
     Returns:
         dict: The API response parsed as a JSON object.
     """
-    headers = {
-        'x-functions-key': x_functions_key,
-        'Content-Type': 'application/json'
-    }
+    headers = {"x-functions-key": x_functions_key, "Content-Type": "application/json"}
 
-    body = {
-        'conversation_id': conversation_id,
-        'question': question
-    }
+    body = {"thread_id": thread_id, "question": question}
 
     try:
         response = requests.post(uri, headers=headers, json=body)
@@ -219,9 +214,9 @@ def display_answer(answer):
         return
 
     # ANSI escape sequences for colors
-    BLUE = '\033[94m'
-    GREY = '\033[90m'
-    RESET = '\033[0m'
+    BLUE = "\033[94m"
+    GREY = "\033[90m"
+    RESET = "\033[0m"
 
     try:
         # Ensure the answer is a dictionary
@@ -230,7 +225,9 @@ def display_answer(answer):
 
         if not isinstance(answer, dict):
             logger.error("Parsed JSON is not a dictionary.")
-            print("Assistant: The provided answer is not in the expected JSON object format.")
+            print(
+                "Assistant: The provided answer is not in the expected JSON object format."
+            )
             return
 
         # Extract keys with default messages if keys are missing
@@ -257,19 +254,19 @@ def display_thoughts_and_data_points(response_data):
     Args:
         response_data (dict): The API response as a JSON object.
     """
-    thoughts = response_data.get('thoughts', '')
-    reasoning = response_data.get('reasoning', '')    
-    data_points = response_data.get('data_points', '')
+    thoughts = response_data.get("thoughts", "")
+    reasoning = response_data.get("reasoning", "")
+    data_points = response_data.get("data_points", "")
     if thoughts or data_points or reasoning:
-        BRIGHT_CYAN = '\033[96m'
-        RESET = '\033[0m'
+        BRIGHT_CYAN = "\033[96m"
+        RESET = "\033[0m"
 
         print(f"{BRIGHT_CYAN}\n--- Agent Group Chat from Last Response ---")
         if data_points:
             print("\nReasoning:")
             print(reasoning)
         if thoughts:
-            print("\nThoughts:")            
+            print("\nThoughts:")
             print(thoughts)
         if data_points:
             print("\nData Points:")
@@ -284,12 +281,12 @@ def main():
     """
     Main function to execute the script logic.
     """
-    conversation_id = ""
+    thread_id = ""
     last_response_data = None
 
     while True:
         user_input = get_user_input()
-        if user_input == 'CTRL_D':
+        if user_input == "CTRL_D":
             # Display thoughts and data_points from last_response_data
             if last_response_data:
                 display_thoughts_and_data_points(last_response_data)
@@ -299,31 +296,32 @@ def main():
         elif user_input is None:
             continue
         else:
-            use_rest_api = os.getenv('USE_REST_API', "False").lower() == "true"
+            use_rest_api = os.getenv("USE_REST_API", "False").lower() == "true"
             if use_rest_api:
                 uri, x_functions_key = get_rest_api_config()
                 response_data = send_question_to_rest_api(
-                    uri, x_functions_key, user_input, conversation_id)
+                    uri, x_functions_key, user_input, thread_id
+                )
             else:
-                response_data = send_question_to_python(user_input, conversation_id)
+                response_data = send_question_to_python(user_input, thread_id)
 
-            if 'error' in response_data:
+            if "error" in response_data:
                 print(f"Error: {response_data['error']}")
                 logger.error(f"Error in response: {response_data['error']}")
                 continue
 
             last_response_data = response_data
-            # Update conversation_id
-            if 'conversation_id' in response_data:
-                conversation_id = response_data['conversation_id']
+            # Update thread_id
+            if "thread_id" in response_data:
+                thread_id = response_data["thread_id"]
             else:
-                logger.warning("No conversation_id in response data.")
+                logger.warning("No thread_id in response data.")
 
             # Display only the answer
             display_answer(response_data)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     try:
         main()
     except Exception as e:

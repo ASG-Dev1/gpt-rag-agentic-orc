@@ -42,13 +42,13 @@ class ConversationManager:
         cosmosdb_client: CosmosDBClient,
         config: OrchestratorConfig,
         client_principal: dict,
-        conversation_id: str,
+        thread_id: str,
     ):
         self.cosmosdb = cosmosdb_client
         self.config = config
         self.client_principal = client_principal
-        self.conversation_id = self._use_or_create_conversation_id(conversation_id)
-        self.short_id = self.conversation_id[:8]
+        self.thread_id = self._use_or_create_thread_id(thread_id)
+        self.short_id = self.thread_id[:8]
 
     def _strip_email(self, value: str | None) -> str:
         if not value:
@@ -69,22 +69,20 @@ class ConversationManager:
         )
         return self._strip_email(candidate)
 
-    def _use_or_create_conversation_id(self, conversation_id: str) -> str:
-        if not conversation_id:
-            conversation_id = str(uuid.uuid4())
-            logging.info(
-                f"[orchestrator] Creating new conversation_id: {conversation_id}"
-            )
-        return conversation_id
+    def _use_or_create_thread_id(self, thread_id: str) -> str:
+        if not thread_id:
+            thread_id = str(uuid.uuid4())
+            logging.info(f"[orchestrator] Creating new thread_id: {thread_id}")
+        return thread_id
 
     async def get_or_create_conversation(self) -> dict:
         conversation = await self.cosmosdb.get_document(
-            self.config.conversation_container, self.conversation_id
+            self.config.conversation_container, self.thread_id
         )
         if not conversation:
 
             new_conversation = {
-                "id": self.conversation_id,
+                "id": self.thread_id,
                 "user_id": self._resolved_user_id(),
                 "user_name": self._resolved_user_id(),
                 "name": "",  # or ""
@@ -95,7 +93,7 @@ class ConversationManager:
             }
             conversation = await self.cosmosdb.create_document(
                 self.config.conversation_container,
-                self.conversation_id,
+                self.thread_id,
                 new_conversation,
             )
             print(
@@ -151,7 +149,7 @@ class ConversationManager:
 
         if not current_name or current_name in [
             "New conversation",
-            self.conversation_id,
+            self.thread_id,
             "",
         ]:
             new_name = ask[:60]
@@ -160,7 +158,7 @@ class ConversationManager:
 
         updated_conversation = {
             **conversation,
-            "id": self.conversation_id,
+            "id": self.thread_id,
             "user_id": author_id,
             "user_name": author_id,
             "name": new_name,
@@ -293,7 +291,7 @@ class MessageParser:
 class BaseOrchestrator(ABC):
     def __init__(
         self,
-        conversation_id: str,
+        thread_id: str,
         config: OrchestratorConfig,
         client_principal: dict = None,
         access_token: str = None,
@@ -303,10 +301,10 @@ class BaseOrchestrator(ABC):
         self.access_token = access_token
         self.cosmosdb = CosmosDBClient()
         self.conversation_manager = ConversationManager(
-            self.cosmosdb, config, client_principal, conversation_id
+            self.cosmosdb, config, client_principal, thread_id
         )
-        self.conversation_id = self.conversation_manager.conversation_id
-        self.short_id = self.conversation_id[:8]
+        self.thread_id = self.conversation_manager.thread_id
+        self.short_id = self.thread_id[:8]
         self.config = config
 
         # Agent strategy is injected if provided; otherwise, use the factory.
@@ -391,7 +389,7 @@ class RequestResponseOrchestrator(BaseOrchestrator):
             data_points = ChatLogParser.extract_data_points(chat_log)
 
             answer_dict = {
-                "conversation_id": self.conversation_id,
+                "thread_id": self.thread_id,
                 "answer": answer,
                 "reasoning": reasoning,
                 "thoughts": chat_log,
@@ -405,7 +403,7 @@ class RequestResponseOrchestrator(BaseOrchestrator):
                 exc_info=True,
             )
             return {
-                "conversation_id": self.conversation_id,
+                "thread_id": self.thread_id,
                 "answer": f"We encountered an issue processing your request. Please try again later. Error: {str(e)}",
                 "reasoning": "",
                 "thoughts": [],
@@ -428,14 +426,14 @@ class RequestResponseOrchestrator(BaseOrchestrator):
 class StreamingOrchestrator(BaseOrchestrator):
     def __init__(
         self,
-        conversation_id: str,
+        thread_id: str,
         config: OrchestratorConfig,
         client_principal: dict = None,
         access_token: str = None,
         agent_strategy=None,
     ):
         super().__init__(
-            conversation_id, config, client_principal, access_token, agent_strategy
+            thread_id, config, client_principal, access_token, agent_strategy
         )
         self.optimize_for_audio = False
 
@@ -453,7 +451,7 @@ class StreamingOrchestrator(BaseOrchestrator):
             selector_func=agent_config["selector_func"],
         )
         stream = group_chat.run_stream(task=ask)
-        streamed_conversation_id = False
+        streamed_thread_id = False
         final_answer = ""
         try:
             async for response in stream:
@@ -466,17 +464,17 @@ class StreamingOrchestrator(BaseOrchestrator):
                 msg_type = msg.get("type", "")
                 msg_content = msg.get("content", "")
                 if msg_type == "ModelClientStreamingChunkEvent":
-                    # embed conversation_id into the first JSON chunk
-                    if not streamed_conversation_id:
+                    # embed thread_id into the first JSON chunk
+                    if not streamed_thread_id:
                         chunk_payload = {
-                            "conversation_id": self.conversation_id,
+                            "thread_id": self.thread_id,
                             "type": "stream",
                             "content": msg_content,
                         }
                         yield f"data: {json.dumps(chunk_payload)}\n\n"
                         # include the first chunk in our final answer accumulation
                         final_answer += msg_content
-                        streamed_conversation_id = True
+                        streamed_thread_id = True
                         continue
                     # yield subsequent chunks normally
                     if msg_content:

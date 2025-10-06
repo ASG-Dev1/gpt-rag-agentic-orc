@@ -11,7 +11,7 @@ Usage:
     python evaluation.py --test-data path/to/test_data.jsonl
 
     Powershell:
-    $env:PYTHONPATH = "./;$env:PYTHONPATH"    
+    $env:PYTHONPATH = "./;$env:PYTHONPATH"
     python evaluation.py --test-data path/to/test_data.jsonl
 
     Environment Variables:
@@ -60,36 +60,37 @@ except ImportError:
 
 # Configure logging
 LOGGING_CONFIG = {
-    'version': 1,
-    'disable_existing_loggers': False,  # Allow existing loggers to propagate
-    'formatters': {
-        'standard': {
-            'format': '%(asctime)s - %(levelname)s - %(name)s - %(message)s',
+    "version": 1,
+    "disable_existing_loggers": False,  # Allow existing loggers to propagate
+    "formatters": {
+        "standard": {
+            "format": "%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         },
     },
-    'handlers': {
-        'file_handler': {
-            'class': 'logging.FileHandler',
-            'filename': 'evaluation.log',
-            'mode': 'a',
-            'formatter': 'standard',
-            'level': 'INFO',
+    "handlers": {
+        "file_handler": {
+            "class": "logging.FileHandler",
+            "filename": "evaluation.log",
+            "mode": "a",
+            "formatter": "standard",
+            "level": "INFO",
         },
-        'console_handler': {
-            'class': 'logging.StreamHandler',
-            'stream': sys.stdout,
-            'formatter': 'standard',
-            'level': 'ERROR',
+        "console_handler": {
+            "class": "logging.StreamHandler",
+            "stream": sys.stdout,
+            "formatter": "standard",
+            "level": "ERROR",
         },
     },
-    'root': {
-        'handlers': ['file_handler', 'console_handler'],
-        'level': 'DEBUG',
+    "root": {
+        "handlers": ["file_handler", "console_handler"],
+        "level": "DEBUG",
     },
 }
 
 logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger(__name__)  # Use a module-specific logger
+
 
 def get_rest_api_config():
     """
@@ -98,8 +99,8 @@ def get_rest_api_config():
     Returns:
         tuple: (orchestrator_endpoint, function_key)
     """
-    orchestrator_endpoint = os.getenv('ORCHESTRATOR_ENDPOINT')
-    function_key = os.getenv('FUNCTION_KEY')
+    orchestrator_endpoint = os.getenv("ORCHESTRATOR_ENDPOINT")
+    function_key = os.getenv("FUNCTION_KEY")
 
     if not orchestrator_endpoint:
         logger.error("ORCHESTRATOR_ENDPOINT not found in environment variables.")
@@ -110,7 +111,8 @@ def get_rest_api_config():
 
     return orchestrator_endpoint, function_key
 
-def send_question_to_rest_api(uri, x_functions_key, question, conversation_id):
+
+def send_question_to_rest_api(uri, x_functions_key, question, thread_id):
     """
     Send the question to the orchestrator API and return the response.
 
@@ -118,20 +120,14 @@ def send_question_to_rest_api(uri, x_functions_key, question, conversation_id):
         uri (str): The API endpoint URI.
         x_functions_key (str): The API access key.
         question (str): The question to send.
-        conversation_id (str): The conversation ID.
+        thread_id (str): The conversation ID.
 
     Returns:
         dict: The API response parsed as a JSON object.
     """
-    headers = {
-        'x-functions-key': x_functions_key,
-        'Content-Type': 'application/json'
-    }
+    headers = {"x-functions-key": x_functions_key, "Content-Type": "application/json"}
 
-    body = {
-        'conversation_id': conversation_id,
-        'question': question
-    }
+    body = {"thread_id": thread_id, "question": question}
 
     try:
         response = requests.post(uri, headers=headers, json=body)
@@ -151,25 +147,26 @@ def send_question_to_rest_api(uri, x_functions_key, question, conversation_id):
         logger.exception(f"HTTP Request failed: {e}")
         return {"error": f"HTTP Request failed: {e}"}
 
-def send_question_to_python(question, conversation_id):
+
+def send_question_to_python(question, thread_id):
     """
     Process the question using the Orchestrator locally.
 
     Args:
         question (str): The user's question.
-        conversation_id (str): The conversation ID.
+        thread_id (str): The conversation ID.
 
     Returns:
         dict: The response from the Orchestrator.
     """
     client_principal = {
-        'id': '00000000-0000-0000-0000-000000000000',
-        'name': 'anonymous'
+        "id": "00000000-0000-0000-0000-000000000000",
+        "name": "anonymous",
     }
 
     if question:
         try:
-            orchestrator = Orchestrator(conversation_id, client_principal)
+            orchestrator = Orchestrator(thread_id, client_principal)
             result = asyncio.run(orchestrator.answer(question))
             if not isinstance(result, dict):
                 logger.error("Expected result to be a dictionary.")
@@ -182,7 +179,10 @@ def send_question_to_python(question, conversation_id):
         logger.warning("No question provided to orchestrate.")
         return {"error": "No question provided."}
 
-def process_question(question, use_rest_api, orchestrator_endpoint, function_key, conversation_id):
+
+def process_question(
+    question, use_rest_api, orchestrator_endpoint, function_key, thread_id
+):
     """
     Process a single question either via REST API or locally.
 
@@ -191,18 +191,20 @@ def process_question(question, use_rest_api, orchestrator_endpoint, function_key
         use_rest_api (bool): Flag to determine the method of processing.
         orchestrator_endpoint (str): The API endpoint URI.
         function_key (str): The API access key.
-        conversation_id (str): The conversation ID.
+        thread_id (str): The conversation ID.
 
     Returns:
         dict: The response from the chosen processing method.
     """
     if use_rest_api:
         response_data = send_question_to_rest_api(
-            orchestrator_endpoint, function_key, question, conversation_id)
+            orchestrator_endpoint, function_key, question, thread_id
+        )
     else:
-        response_data = send_question_to_python(question, conversation_id)
-    
+        response_data = send_question_to_python(question, thread_id)
+
     return response_data
+
 
 def prettify_jsonl_file(input_file):
     # Check if the input file exists
@@ -212,21 +214,22 @@ def prettify_jsonl_file(input_file):
 
     try:
         # Read the entire content from the input file first
-        with open(input_file, 'r', encoding='utf-8') as infile:
+        with open(input_file, "r", encoding="utf-8") as infile:
             lines = infile.readlines()
 
         # Prettify the content and write back to the same file
-        with open(input_file, 'w', encoding='utf-8') as outfile:
+        with open(input_file, "w", encoding="utf-8") as outfile:
             for line in lines:
                 # Load the JSON object from the line
                 json_obj = json.loads(line.strip())
                 # Write the pretty-printed JSON back to the file
                 json.dump(json_obj, outfile, indent=4, ensure_ascii=False)
-                outfile.write('\n')  # Add a newline after each JSON object
+                outfile.write("\n")  # Add a newline after each JSON object
 
         print(f"Prettified JSONL content has been written to '{input_file}'")
     except Exception as e:
         print(f"Error occurred while processing the file: {e}")
+
 
 def parse_arguments():
     """
@@ -246,6 +249,7 @@ def parse_arguments():
     )
     return parser.parse_args()
 
+
 def main():
     """
     Main function to execute the evaluation process.
@@ -263,7 +267,7 @@ def main():
     load_dotenv()
     current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    use_rest_api = os.getenv('USE_REST_API', "False").lower() == "true"
+    use_rest_api = os.getenv("USE_REST_API", "False").lower() == "true"
     if use_rest_api:
         orchestrator_endpoint, function_key = get_rest_api_config()
         print("Configured to use REST API for processing questions.")
@@ -274,29 +278,33 @@ def main():
 
     # Azure configuration (used if needed)
     azure_config = {
-        "aoai_endpoint": os.environ.get('AZURE_OPENAI_ENDPOINT', ''),
-        "aoai_api_version": os.environ.get('AZURE_OPENAI_API_VERSION', '2024-02-01'),
-        "aoai_api_key": os.environ.get('AZURE_OPENAI_API_KEY', ''),
-        "subscription_id": os.environ.get('AZURE_SUBSCRIPTION_ID', ''),
-        "resource_group": os.environ.get('AZURE_RESOURCE_GROUP', ''),
-        "project_name": os.environ.get('AZUREAI_PROJECT_NAME', '')
+        "aoai_endpoint": os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
+        "aoai_api_version": os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-01"),
+        "aoai_api_key": os.environ.get("AZURE_OPENAI_API_KEY", ""),
+        "subscription_id": os.environ.get("AZURE_SUBSCRIPTION_ID", ""),
+        "resource_group": os.environ.get("AZURE_RESOURCE_GROUP", ""),
+        "project_name": os.environ.get("AZUREAI_PROJECT_NAME", ""),
     }
     print("Azure configuration loaded.")
 
     # Ensure 'evaluations' directory exists
-    os.makedirs('evaluations', exist_ok=True)
+    os.makedirs("evaluations", exist_ok=True)
     print("Ensured 'evaluations' directory exists.")
 
     output_jsonl_file = f"evaluations/responses_{current_time}.jsonl"
-    output_excel_file = f"evaluations/responses_{current_time}.xlsx"  # Excel output file
-    conversation_id = ""
+    output_excel_file = (
+        f"evaluations/responses_{current_time}.xlsx"  # Excel output file
+    )
+    thread_id = ""
     last_response_data = None
 
     # Initialize a list to collect all output data for Excel
     excel_data = []
 
     # Process each question in the test dataset
-    with open(data_file_to_use, 'r', encoding='utf-8') as f_in, open(output_jsonl_file, 'w', encoding='utf-8') as f_out:
+    with open(data_file_to_use, "r", encoding="utf-8") as f_in, open(
+        output_jsonl_file, "w", encoding="utf-8"
+    ) as f_out:
         print("Opened data file and output JSONL file.")
         for line_number, line in enumerate(f_in, start=1):
             line = line.strip()
@@ -304,8 +312,8 @@ def main():
                 continue
             try:
                 data = json.loads(line)
-                question = data.get('question', '')
-                ground_truth = data.get('ground_truth', '')
+                question = data.get("question", "")
+                ground_truth = data.get("ground_truth", "")
                 print(f"Processing question {line_number}: {question}")
 
                 start_time = time.time()
@@ -315,7 +323,7 @@ def main():
                     use_rest_api,
                     orchestrator_endpoint if use_rest_api else None,
                     function_key if use_rest_api else None,
-                    conversation_id
+                    thread_id,
                 )
                 duration = time.time() - start_time
 
@@ -323,12 +331,16 @@ def main():
                 output_data = {
                     "Question": question,
                     "Ground ground_truth": ground_truth,
-                    "Answer": response_data.get('answer', 'No answer provided.'),
-                    "Context": response_data.get('data_points', 'No data points provided.'),
-                    "Reasoning": response_data.get('reasoning', 'No reasoning provided.'),
-                    "Processing Time (seconds)": duration
+                    "Answer": response_data.get("answer", "No answer provided."),
+                    "Context": response_data.get(
+                        "data_points", "No data points provided."
+                    ),
+                    "Reasoning": response_data.get(
+                        "reasoning", "No reasoning provided."
+                    ),
+                    "Processing Time (seconds)": duration,
                 }
-                f_out.write(json.dumps(output_data) + '\n')
+                f_out.write(json.dumps(output_data) + "\n")
 
                 # Append to excel_data list
                 excel_data.append(output_data)
@@ -349,7 +361,8 @@ def main():
         logger.exception(f"Failed to save results to Excel: {e}")
         print(f"Error: Could not save results to Excel file. {e}")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     try:
         main()
     except Exception as e:

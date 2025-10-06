@@ -73,7 +73,7 @@ This script will:
   "ground_truth": "Zero Trust is a security model...",
   "response": "Zero Trust is a framework that assumes...",
   "context": "",
-  "conversation_id": "123e4567-e89b-12d3-a456-426614174000"
+  "thread_id": "123e4567-e89b-12d3-a456-426614174000"
 }
 ```
 

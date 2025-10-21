@@ -367,9 +367,14 @@ class RequestResponseOrchestrator(BaseOrchestrator):
                     message_data = json.loads(last_message)
                 else:
                     raise TypeError(f"Unexpected message type: {type(last_message)}")
-                answer = message_data.get(
-                    "answer",
-                    "Oops! The agent team did not generate a response for the user.",
+                # answer = message_data.get(
+                #     "answer",
+                #     "Oops! The agent team did not generate a response for the user.",
+                # )
+                answer = (
+                    answer.replace("I N_P R O G R E S S", "")
+                    .replace("IN_PROGRESS", "")
+                    .strip()
                 )
                 reasoning = message_data.get("reasoning", "")
             except json.JSONDecodeError:

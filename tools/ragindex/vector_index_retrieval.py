@@ -301,121 +301,91 @@ async def vector_index_retrieve(
                 {"queryType": "semantic", "semanticConfiguration": semantic_config}
             )
 
-        # case_match = re.search(
-        #     r"(?:caso\s+(?:n[uú]mero\s+de\s+)?)?(?:caso)?\s*[#:]*\s*([0-9]{2}[A-Z]-[0-9]+)",
-        #     q,
-        #     re.IGNORECASE,
-        # )
-        case_match = re.search(
-            r"\b([0-9]{2}[A-Z]-[0-9]{5})\b",
-            q,
-            re.IGNORECASE,
-        )
+        # --- 🔹 Detect multiple case numbers (vertical, comma or space separated)
+        # case_numbers = re.findall(r"\b\d{2}[A-Z]-\d{5}\b", q.upper())
+        case_numbers = re.findall(r"\b\d{2}[A-Z]{1,2}-\d{5}\b", q, re.IGNORECASE)
+        results = []
 
-        if case_match:
-            case_number_for_filter = case_match.group(1).upper()
-            body["search"] = "*"  # ignore full text search
-            body["filter"] = f"Numero_de_Caso eq '{case_number_for_filter}'"
-            body["top"] = 1
-            print(f"📌 Filtering by Numero_de_Caso: {case_number_for_filter}")
+        if case_numbers:
+            print(f"📂 Found case numbers: {case_numbers}")
 
-        url = f"https://{service}.search.windows.net/indexes/{index}/docs/search?api-version={api_version}"
-        resp = await _perform_search(url, headers, body)
+            for case_number in case_numbers:
+                case_number = case_number.strip().upper()
+                body_case = body.copy()
+                body_case["search"] = "*"
+                body_case["filter"] = f"Numero_de_Caso eq '{case_number}'"
+                body_case["top"] = 1
 
-        if not resp.get("value"):
-            results.append(
-                f"No se encontró ningún caso con el número {case_number_for_filter}."
-            )
+                print(f"📌 Filtering by Numero_de_Caso: {case_number}")
+                url = f"https://{service}.search.windows.net/indexes/{index}/docs/search?api-version={api_version}"
+                resp = await _perform_search(url, headers, body_case)
+
+                if not resp.get("value"):
+                    results.append(
+                        f"No se encontró información para el caso {case_number}."
+                    )
+                    continue
+
+                for doc in resp["value"]:
+                    # Detect what fields user asked for
+                    matched_fields = [
+                        field for kws, field in field_map if any(kw in q for kw in kws)
+                    ]
+                    if not matched_fields:
+                        matched_fields = [
+                            field
+                            for kws, field in dynamic_field_map
+                            if any(kw in q for kw in kws)
+                        ]
+
+                    lines = []
+                    if matched_fields:
+                        for field in matched_fields:
+                            val = doc.get(field)
+                            if val:
+                                label = field_labels.get(field, field)
+                                lines.append(f"{label}: {val}")
+                    elif any(
+                        kw in q
+                        for kw in SHOW_ALL_TRIGGERS
+                        + [
+                            "toda la información",
+                            "información completa",
+                            "información del caso",
+                        ]
+                    ):
+                        for f in all_fields:
+                            val = doc.get(f)
+                            if val:
+                                label = field_labels.get(f, f)
+                                lines.append(f"{label}: {val}")
+                    else:
+                        lines.append(
+                            "❗ Especifique claramente qué campo desea consultar."
+                        )
+
+                    # Add inline PDF if exists
+                    pdf_url = doc.get("Url_de_Archivo_de_Orden_de_Compra")
+                    pdf_name = (
+                        doc.get("Nombre_de_Archivo_de_Orden_de_Compra")
+                        or "Archivo de la Orden de Compra"
+                    )
+                    if pdf_url:
+                        from urllib.parse import urlparse, urlencode, parse_qsl
+
+                        parsed = urlparse(pdf_url)
+                        query_params = dict(parse_qsl(parsed.query))
+                        query_params.update(
+                            {"rsct": "application/pdf", "rscd": "inline"}
+                        )
+                        new_url = parsed._replace(
+                            query=urlencode(query_params)
+                        ).geturl()
+                        lines.append(f"[INLINE_PDF:{pdf_name}|{new_url}]")
+
+                    results.append(f"📎 **Caso {case_number}**\n" + "\n".join(lines))
+
             return VectorIndexRetrievalResult(result="\n\n".join(results), error=None)
-
-        for doc in resp.get("value", []):
-            # First, try to match using field_map only
-            matched_fields = [
-                field for kws, field in field_map if any(kw in q for kw in kws)
-            ]
-
-            # If nothing matched, fall back to dynamic_field_map
-            if not matched_fields:
-                matched_fields = [
-                    field
-                    for kws, field in dynamic_field_map
-                    if any(kw in q for kw in kws)
-                ]
-
-            if matched_fields:
-                lines = []
-                for field in matched_fields:
-                    val = doc.get(field)
-                    if val:
-                        label = field_labels.get(field, field)
-                        lines.append(f"{label}: {val}")
-                if lines:
-                    results.append("\n".join(lines))
-                else:
-                    results.append("No matching field values found.")
-                continue
-
-            if any(
-                kw in q
-                for kw in SHOW_ALL_TRIGGERS
-                + ["toda la información", "información del caso"]
-            ):
-                lines = []
-                pdf_url = doc.get("Url_de_Archivo_de_Orden_de_Compra")
-                pdf_name = (
-                    doc.get("Nombre_de_Archivo_de_Orden_de_Compra")
-                    or "Archivo de la Orden de Compra"
-                )
-
-                for f in all_fields:
-                    if f in [
-                        "Url_de_Archivo_de_Orden_de_Compra",
-                        "Nombre_de_Archivo_de_Orden_de_Compra",
-                    ]:
-                        continue
-                    val = doc.get(f)
-                    if val:
-                        lines.append(f"{field_labels[f]}: {val}")
-
-                text_block = "\n".join(lines)
-
-                if pdf_url:
-                    from urllib.parse import urlparse, urlencode, parse_qsl
-
-                    parsed = urlparse(pdf_url)
-                    query = dict(parse_qsl(parsed.query))
-                    query.update({"rsct": "application/pdf", "rscd": "inline"})
-                    new_url = parsed._replace(query=urlencode(query)).geturl()
-
-                    text_block += f"\n\n[INLINE_PDF:{pdf_name}|{new_url}]"
-                else:
-                    text_block += "\n\nArchivo de la Orden de Compra: No disponible."
-
-                results.append(text_block)
-            else:
-                results.append("❗ Especifique claramente qué campo desea consultar.")
-
-        # Fallback: show inline PDF if no matched fields but PDF exists
-        if not results and resp.get("value"):
-            doc = resp["value"][0]
-            pdf_url = doc.get("Url_de_Archivo_de_Orden_de_Compra")
-            pdf_name = (
-                doc.get("Nombre_de_Archivo_de_Orden_de_Compra")
-                or "Archivo de la Orden de Compra"
-            )
-            if pdf_url:
-                from urllib.parse import urlparse, urlencode, parse_qsl
-
-                parsed = urlparse(pdf_url)
-                query = dict(parse_qsl(parsed.query))
-                query.update({"rsct": "application/pdf", "rscd": "inline"})
-                new_url = parsed._replace(query=urlencode(query)).geturl()
-                pdf_filename = pdf_url.split("/")[-1].split("?")[0]
-                results.append(
-                    f"El archivo del caso {doc.get('Numero_de_Caso')} está disponible:\n\n[INLINE_PDF:{pdf_filename}|{new_url}]"
-                )
-            else:
-                results.append("No se encontró un archivo asociado al caso.")
 
     except Exception as e:
         error = str(e)

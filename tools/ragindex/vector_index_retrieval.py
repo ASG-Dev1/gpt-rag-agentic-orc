@@ -271,6 +271,10 @@ async def vector_index_retrieve(
         "everything",
         "todos",
         "toda",
+        "información completa",
+        "info completa",
+        "todo el caso",
+        "detalles del caso",
     ]
 
     results: List[str] = []
@@ -302,31 +306,38 @@ async def vector_index_retrieve(
             )
 
         # --- 🔹 Detect multiple case numbers (vertical, comma or space separated)
-        # case_numbers = re.findall(r"\b\d{2}[A-Z]-\d{5}\b", q.upper())
-        case_numbers = re.findall(r"\b\d{2}[A-Z]{1,2}-\d{5}\b", q, re.IGNORECASE)
+        # case_numbers = re.findall(r"\b\d{2}[A-Z]{1,2}-\d{5}\b", q, re.IGNORECASE)
+        # use original query for case detection
+        case_numbers = re.findall(
+            r"\b\d{2}[A-Z]{1,2}-\d{5}\b", query.upper(), re.IGNORECASE
+        )
         results = []
 
         if case_numbers:
             print(f"📂 Found case numbers: {case_numbers}")
 
-            for case_number in case_numbers:
-                case_number = case_number.strip().upper()
-                body_case = body.copy()
-                body_case["search"] = "*"
-                body_case["filter"] = f"Numero_de_Caso eq '{case_number}'"
-                body_case["top"] = 1
+            # ✅ Build a combined OR filter for all case numbers
+            filter_expr = " or ".join(
+                [f"Numero_de_Caso eq '{cn.strip().upper()}'" for cn in case_numbers]
+            )
 
-                print(f"📌 Filtering by Numero_de_Caso: {case_number}")
-                url = f"https://{service}.search.windows.net/indexes/{index}/docs/search?api-version={api_version}"
-                resp = await _perform_search(url, headers, body_case)
+            body_multi = body.copy()
+            body_multi["search"] = "*"  # fetch all docs matching filter
+            body_multi["filter"] = filter_expr
+            body_multi["top"] = len(case_numbers)
 
-                if not resp.get("value"):
-                    results.append(
-                        f"No se encontró información para el caso {case_number}."
-                    )
-                    continue
+            url = f"https://{service}.search.windows.net/indexes/{index}/docs/search?api-version={api_version}"
+            resp = await _perform_search(url, headers, body_multi)
 
+            if not resp.get("value"):
+                results.append(
+                    "❌ No se encontraron resultados para los casos solicitados."
+                )
+            else:
                 for doc in resp["value"]:
+                    case_number = doc.get("Numero_de_Caso", "N/A")
+                    lines = []
+
                     # Detect what fields user asked for
                     matched_fields = [
                         field for kws, field in field_map if any(kw in q for kw in kws)
@@ -338,20 +349,38 @@ async def vector_index_retrieve(
                             if any(kw in q for kw in kws)
                         ]
 
-                    lines = []
                     if matched_fields:
                         for field in matched_fields:
                             val = doc.get(field)
                             if val:
                                 label = field_labels.get(field, field)
                                 lines.append(f"{label}: {val}")
-                    elif any(
+                    # ✅ Show ALL fields if user requested full info on one (1) case only
+                    # elif any(
+                    #     kw in q
+                    #     for kw in SHOW_ALL_TRIGGERS
+                    #     + [
+                    #         "toda la información",
+                    #         "información completa",
+                    #         "información del caso",
+                    #     ]
+                    # ):
+                    #     for f in all_fields:
+                    #         val = doc.get(f)
+                    #         if val:
+                    #             label = field_labels.get(f, f)
+                    #             lines.append(f"{label}: {val}")
+
+                    # ✅ Show ALL fields if user requested full info on one case only or multiple cases at a time
+                    elif case_numbers and any(
                         kw in q
                         for kw in SHOW_ALL_TRIGGERS
                         + [
                             "toda la información",
                             "información completa",
                             "información del caso",
+                            "toda la info",
+                            "todo del caso",
                         ]
                     ):
                         for f in all_fields:
